@@ -1,0 +1,88 @@
+---
+
+#
+# https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/8/html/using_the_desktop_environment_in_rhel_8/assembly_restricting-the-session-to-a-single-application_using-the-desktop-environment-in-rhel-8
+#
+
+- name: Install kiosk package
+  yum:
+    name: gnome-session-kiosk-session
+    state: present
+
+- name: Get autologin user info
+  getent:
+    database: passwd
+    key: "{{ kiosk_user }}"
+
+- name: Install bin dir for user
+  file:
+    path: "{{ getent_passwd[kiosk_user][4] }}/.local/bin"
+    state: directory
+    mode: 0700
+    owner: "{{ kiosk_user }}"
+    group: "{{ kiosk_user }}"
+
+- name: Install kiosk script
+  template:
+    src: "{{ 'templates/' + kiosk_script + '.j2'}}"
+    dest: "{{ getent_passwd[kiosk_user][4] }}/.local/bin/redhat-kiosk"
+    mode: 0700
+    owner: "{{ kiosk_user }}"
+    group: "{{ kiosk_user }}"
+
+- name: Remove xsecurelock autostart
+  file:
+    path: /etc/xdg/autostart/xsecurelock.desktop
+    state: absent
+
+- name: Set default gnome session
+  lineinfile:
+    path: /etc/gdm/custom.conf
+    line: "DefaultSession=com.redhat.Kiosk.desktop"
+    regexp: '^\s*#?\s*DefaultSession'
+    insertafter: '\[daemon\]'
+
+- name: Exclusive block
+  block:
+    - name: Find desktop sessions
+      find:
+        paths: /usr/share/xsessions/
+        recurse: false
+        excludes: com.redhat.Kiosk.desktop
+      register: _files
+
+    - name: Ensure backup dir exists
+      file:
+        path: "{{ kiosk_backup_dir }}"
+        state: directory
+        mode: 0700
+        owner: root
+        group: root
+      when: _files.files | length > 0
+
+# begin FD add        
+
+    - name: Uninstall PackageKit
+        ansible.builtin.dnf:
+        name: PackageKit
+        state: absent
+        autoremove: yes
+
+    - name: Uninstall gnome-software
+        ansible.builtin.dnf:
+        name: gnome-software
+        state: absent
+        autoremove: yes
+
+# end FD add
+
+    - name: Backup other session files
+      command: >
+        mv '{{ item.path }}'
+          '{{ kiosk_backup_dir + '/' + ( item.path | basename ) }}'
+      loop: "{{ _files.files }}"
+      loop_control:
+        label: "{{ item.path }}"
+      when: _files.files | length > 0
+
+  when: kiosk_exclusive is defined and ( kiosk_exclusive | bool )
